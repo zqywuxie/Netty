@@ -896,3 +896,14 @@ public class JSONSerializer implements Serializer {
 </dependency>
 ```
 
+
+
+### 7.实战：实现客户端登录
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/14/16535d7424e02d3a~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+流程如图
+
+1. 构建登录请求对象编码为ByteBuf传输到服务端。
+2. 服务端解码后进行登录校验，然后构造登录相应对象，依然经过编码传输回客户端。
+3. 客户端拿到登录响应判断是否登录成功

@@ -10,4 +10,10 @@ public interface command {
      * 登录指令
      */
     Byte LOGIN_REQUEST = 1;
+
+    /**
+     * 登录响应指令
+     */
+
+    Byte LOGIN_RESPONSE = 2;
 }

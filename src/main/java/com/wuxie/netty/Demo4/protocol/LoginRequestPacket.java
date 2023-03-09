@@ -1,5 +1,6 @@
 package com.wuxie.netty.Demo4.protocol;
 
+import com.sun.org.apache.xpath.internal.operations.Bool;
 import lombok.Data;
 
 import static com.wuxie.netty.Demo4.protocol.command.LOGIN_REQUEST;
@@ -12,11 +13,13 @@ import static com.wuxie.netty.Demo4.protocol.command.LOGIN_REQUEST;
 @Data
 public class LoginRequestPacket extends Packet {
 
-    private Integer userId;
+    private String userId;
 
     private String username;
 
     private String password;
+
+
 
     @Override
     public Byte getCommand() {

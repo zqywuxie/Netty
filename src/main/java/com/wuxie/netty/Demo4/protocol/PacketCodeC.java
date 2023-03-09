@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static com.wuxie.netty.Demo4.protocol.command.LOGIN_REQUEST;
+import static com.wuxie.netty.Demo4.protocol.command.LOGIN_RESPONSE;
 
 
 /**
@@ -23,14 +24,24 @@ public class PacketCodeC {
     private static final Map<Byte,Class<? extends Packet>> packetTypeMap;
     private static final Map<Byte, Serializer>serializerMap;
 
+    private static PacketCodeC INSTANCE;
+
     static {
         packetTypeMap = new HashMap<>();
         packetTypeMap.put(LOGIN_REQUEST, LoginRequestPacket.class);
+        packetTypeMap.put(LOGIN_RESPONSE,LoginResponsePacket.class);
         serializerMap = new HashMap<>();
         Serializer jsonSerializer = new JSONSerializer();
         serializerMap.put(jsonSerializer.getSerializerAlgorithm(),jsonSerializer);
-
     }
+    public static synchronized PacketCodeC getInstance(){
+        if (INSTANCE==null){
+            INSTANCE = new PacketCodeC();
+        }
+        return INSTANCE;
+    }
+
+
 
     /**
      * 编码
