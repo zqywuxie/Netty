@@ -1,10 +1,13 @@
-package com.wuxie.netty.Demo4.server;
+package com.wuxie.netty.Demo5;
 
+import com.wuxie.netty.Demo4.server.FirstServerHandler;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.GenericFutureListener;
 
 /**
  * @author wuxie
@@ -21,7 +24,7 @@ public class NettyServer {
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new ChannelInitializer<NioSocketChannel>() {
                     protected void initChannel(NioSocketChannel channel) {
-//                        channel.pipeline().addLast(new FirstServerHandler());
+                        channel.pipeline().addLast(new FirstServerHandler());
                         channel.pipeline().addLast(new InBoundHandlerA());
                         channel.pipeline().addLast(new InBoundHandlerB());
                         channel.pipeline().addLast(new InBoundHandlerC());

@@ -385,7 +385,7 @@ Bootstrap
 ```java
     @Override
     protected void initChannel(SocketChannel socketChannel) throws Exception {
-        socketChannel.pipeline().addLast(new FirstClientHandler());
+        socketChannel.pipeline().addLast(new ClientHandler());
     }
 ```
 
@@ -399,10 +399,10 @@ ChannelPipeline pipeline();
 
 
 
-> FirstClientHandler.java 逻辑处理代码
+> ClientHandler.java 逻辑处理代码
 
 ```java
-public class FirstClientHandler extends ChannelInboundHandlerAdapter {
+public class ClientHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         ByteBuf byteBuf = getByteBuf(ctx);
@@ -428,15 +428,15 @@ public class FirstClientHandler extends ChannelInboundHandlerAdapter {
 ```java
 .childHandler(new ChannelInitializer<NioSocketChannel>() {
     protected void initChannel(NioSocketChannel channel){
-        channel.pipeline().addLast(new FirstServerHandler());
+        channel.pipeline().addLast(new ServerHandler());
     }
 });
 ```
 
-> FirstServerHandler.java
+> ServerHandler.java
 
 ```java
-public class FirstServerHandler extends ChannelInboundHandlerAdapter {
+public class ServerHandler extends ChannelInboundHandlerAdapter {
 @Override
 public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
     ByteBuf byteBuf= (ByteBuf) msg;
@@ -959,7 +959,7 @@ public interface command {
 
 我们将实战Ⅰ中的客户端和服务端代码进行修改
 
-> FirstServerHandler.java
+> ServerHandler.java
 
 ```java
     @Override
@@ -1007,7 +1007,7 @@ public interface command {
 
 
 
-> FirstClientHandler.java
+> ClientHandler.java
 
 
 
@@ -1251,7 +1251,7 @@ private static void connect(Bootstrap bootstrap, String host, int port, int retr
 
 
 
-> FirstClientHandler.java  添加读取响应逻辑
+> ClientHandler.java  添加读取响应逻辑
 
 ```java
 if (LOGIN_RESPONSE.equals(command)) {
@@ -1278,7 +1278,7 @@ if (LOGIN_RESPONSE.equals(command)) {
 
 #### server
 
-> FirstServerHandler.java
+> ServerHandler.java
 
 ```java
     @Override
@@ -1334,3 +1334,617 @@ if (LOGIN_RESPONSE.equals(command)) {
 2. 使用channel的`attr`方法，进行添加登录标记
 3. 开启新线程进行客户端的消息发送
 4. 服务单获得消息并且对客户端做出响应
+
+#### 问题：
+
+当指令越来越多，如何避免`channelRead`中的对指令处理逻辑的`if else`泛滥？
+
+
+
+### 9.pipeline 与 channelHandler
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/17/16545510d7b4f970~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+如上图我们可知将所有数据处理都放在了一个类中，客户端的`ClientHandler`和服务端的`ServerHandler`，那么就会导致一个类非常臃肿。并且对于数据的输送我们都必要手动的进行编码，那么我们会想将不同逻辑进行**模块化处理**，不同类处理不同逻辑，比如登录类处理登录校验，编码类处理编码等，然后将其串联起来，形成一个完整的逻辑处理链。
+
+
+
+Netty 中的 `pipeline `和 `channelHandler `正是用来解决这个问题的：它通过**责任链设计模式**来组织代码逻辑，并且能够**支持逻辑的动态添加和删除** ，Netty 能够支持各类协议的扩展，比如 HTTP，Websocket，Redis，靠的就是 pipeline 和 channelHandler。
+
+
+
+#### 构成
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/17/1654526f0a67bb52~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+由图得所有处理逻辑都在`ChannelPipeline`对象中，并且它是一个双向链表，与channel一对一关系。
+
+`ChannelPipeline` 里面每个节点都是一个 `ChannelHandlerContext` 对象，这个对象能够拿到和 Channel 相关的**所有的上下文信息**，然后这个对象包着一个重要的对象，那就是逻辑处理器 `ChannelHandler`。
+
+
+
+#### 分类
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/17/1654526f0a8f2890~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+
+
+- `ChannelInboundHandler` 
+
+**处理读数据的逻辑**，比如，我们在一端读到一段数据，首先要解析这段数据，然后对这些数据做一系列逻辑处理，最终把响应写到对端， 在开始组装响应之前的所有的逻辑，都可以放置在 `ChannelInboundHandler` 里处理，它的一个最重要的方法就是 `channelRead()`。读者可以将 `ChannelInboundHandler` 的逻辑处理过程与 TCP 的七层协议的解析联系起来，收到的数据一层层从物理层上升到我们的应用层。
+
+- `ChannelOutBoundHandler `
+
+**处理写数据的逻辑**，它是定义我们一端在组装完响应之后，把数据写到对端的逻辑，比如，我们封装好一个 response 对象，接下来我们有可能对这个 response 做一些其他的特殊逻辑，然后，再编码成 ByteBuf，最终写到对端，它里面最核心的一个方法就是 `write()`，读者可以将 `ChannelOutBoundHandler` 的逻辑处理过程与 TCP 的七层协议的封装过程联系起来，我们在应用层组装响应之后，通过层层协议的封装，直到最底层的物理层。
+
+
+
+上面是两个接口，有对应的默认实现，`ChannelInboundHandlerAdapter`，和 `ChanneloutBoundHandlerAdapter`，它们分别实现了两大接口的所有功能，**默认情况下会把读写事件传播到下一个 handler**。
+
+
+
+#### ChannelInboundHandler 的事件传播
+
+基于实战Ⅲ的代码修改
+
+```java
+serverBootstrap
+        .group(bossGroup, workGroup)
+        .channel(NioServerSocketChannel.class)
+        .childHandler(new ChannelInitializer<NioSocketChannel>() {
+            protected void initChannel(NioSocketChannel channel) {
+                channel.pipeline().addLast(new FirstServerHandler());
+                channel.pipeline().addLast(new InBoundHandlerA());
+                channel.pipeline().addLast(new InBoundHandlerB());
+                channel.pipeline().addLast(new InBoundHandlerC());
+            }
+        });
+
+
+class InBoundHandlerA extends ChannelInboundHandlerAdapter {
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        System.out.println("InBoundHandlerA:" + msg);
+        super.channelRead(ctx, msg);
+    }
+}
+
+......
+```
+
+
+
+`childHandler` 是要客户端连接才会执行，并且`server`向外输送数据，所以都需要启动才会看到效果。
+
+可见顺序是`A->B->C`
+
+
+
+![image-20230310161310428](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310161310428.png)
+
+
+
+#### ChannelOutboundHandler 的事件传播
+
+```java
+    .group(bossGroup, workGroup)
+    .channel(NioServerSocketChannel.class)
+    .childHandler(new ChannelInitializer<NioSocketChannel>() {
+        protected void initChannel(NioSocketChannel channel) {
+            channel.pipeline().addLast(new FirstServerHandler());
+            channel.pipeline().addLast(new InBoundHandlerA());
+            channel.pipeline().addLast(new InBoundHandlerB());
+            channel.pipeline().addLast(new InBoundHandlerC());
+
+            // outBound，处理写数据的逻辑链
+            channel.pipeline().addLast(new OutBoundHandlerA());
+            channel.pipeline().addLast(new OutBoundHandlerB());
+            channel.pipeline().addLast(new OutBoundHandlerC());
+        }
+    });
+
+
+class OutBoundHandlerA extends ChannelOutboundHandlerAdapter{
+
+    @Override
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+        System.out.println("OutBoundHandlerA:"+msg);
+        super.write(ctx, msg, promise);
+    }
+}
+.....
+```
+
+
+
+`ChannelOutboundHandlerAdapter` 需要`client`向`server` 发送数据，server处理写数据
+
+这里没有调用`InBoundHandlerABC` ，因为前者`FirstServerHandler` 进行处理并没有向下进行传递
+
+需要使用到`fireChannelRead` 才能进行向下传递，所以`InBoundHandlerABC` 就没有执行
+
+```java
+super.channelRead(ctx, msg);
+@Override
+public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+    ctx.fireChannelRead(msg);
+}
+```
+
+
+
+同理如果删除某个`OutBoundHandlerC`的`super.write(ctx, msg, promise);` ，一样不会向下执行。
+
+
+
+
+
+
+
+![image-20230310163252543](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310163252543.png)
+
+
+
+可见顺序与添加顺序相反是`C->B->A`
+
+
+
+> pipeline 的结构
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/17/1654526f0a73d8c3~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+ChannelHandlerContext
+
+> 实际存储在Pipeline中的并非是ChannelHandler，而是上下文对象。将Handler包裹在上下文对象中，通过上下文对象与它所属的ChannelPipeline交互，向上或向下传递事件或者修改pipeline都是通过上下文对象。
+
+那么如何维护Pipeline中的handler呢
+
+> ChannelPipeline是线程安全的，ChannelHandler可以在任何时候添加或者删除。例如你可以在即将交换敏感信息时插入加密处理程序，并在交换后删除它。一般操作，初始化的时候增加进去，较少删除。下面是Pipeline中管理的API
+
+
+
+
+
+> pipeline的执行顺序
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/17/1654526f4f032dbb~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+
+
+虽然两种类型的 handler 在一个双向链表里，但是这两类 handler 的分工是不一样的，inBoundHandler 的事件通常只会传播到下一个 inBoundHandler，outBoundHandler 的事件通常只会传播到下一个 outBoundHandler，**两者相互不受干扰**。
+
+
+
+#### 思考
+
+1. 参考本文的例子，如果我们往 pipeline 里面添加 handler 的顺序不变， 要在控制台打印出 inboundA -> inboundC -> outboundB -> outboundA，该如何实现？
+2. 如何在每个 handler 里面打印上一个 handler 处理结束的时间点？
+
+
+
+
+
+### 实战Ⅳ：构建客户端与服务端 pipeline
+
+通过Netty内置的ChannelHandler进行构建
+
+**ChannelInboundHandlerAdapter ，ChannelOutboundHandlerAdapter**
+
+---
+
+
+
+上文已经介绍过，我们主要关心如下方法
+
+> ChannelInboundHandlerAdapter.java
+
+```java
+@Override
+public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+    ctx.fireChannelRead(msg);
+}
+```
+
+接收上一个handler输出，其中`msg`就是上一个handler的输出。默认情况下 adapter 会通过 `fireChannelRead()` 方法直接把上一个 handler 的输出结果传递到下一个 handler。
+
+> ChannelOutboundHandlerAdapter.java
+
+```java
+@Override
+public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+    ctx.write(msg, promise);
+}
+```
+
+同上，但是传播顺序与上方相反
+
+
+
+自定义自己的pipeline，考虑数据的处理逻辑，首先服务端会受到请求，通过`channelRead`，`msg`就是`ByteBuf`，所以对其进行解码。
+
+```java
+@Override
+public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        ByteBuf requestByteBuf = (ByteBuf) msg;
+        // 解码
+        Packet packet = PacketCodeC.INSTANCE.decode(requestByteBuf);
+        // 解码后的对象传递到下一个 handler 处理
+        ctx.fireChannelRead(packet)
+}
+```
+
+解码前需要对数据进行强转，Netty对此进行了优化，提供了一个解码的父类
+
+
+
+**ByteToMessageDecoder**
+
+---
+
+```java
+public class PacketDecoder extends ByteToMessageDecoder {
+
+    @Override
+    protected void decode(ChannelHandlerContext ctx, ByteBuf in, List out) {
+        out.add(PacketCodeC.INSTANCE.decode(in));
+    }
+}
+```
+
+实现它的`decode` 方法，并且这里的数据已经是`ByteBuf` ，所以不需要强转了，并且这里使用到了一个`List`存储数据，就自动实现了向下一个handler的传递。
+
+另外，值得注意的一点，对于 Netty 里面的 ByteBuf，我们使用 `4.1.6.Final` 版本，默认情况下用的是堆外内存，在前面提到过，**堆外内存我们需要自行释放**，在我们前面小节的解码的例子中，其实我们已经漏掉了这个操作，这一点是非常致命的，随着程序运行越来越久，内存泄露的问题就慢慢暴露出来了， 而这里我们使用 `ByteToMessageDecoder`，Netty 会自动进行内存的释放，我们不用操心太多的内存管理方面的逻辑，关于如何自动释放内存大家有兴趣可以参考一下 [ByteToMessageDecoder的实现原理(8-2)](https://link.juejin.cn/?target=https%3A%2F%2Fcoding.imooc.com%2Fclass%2Fchapter%2F230.html%23Anchor)。
+
+
+
+**SimpleChannelInboundHandler**
+
+---
+
+回顾之前的数据处理逻辑
+
+```java
+if (LOGIN_REQUEST.equals(command)) {
+
+} else if (MESSAGE_REQUEST.equals(command)) {
+
+}
+```
+
+我们将不同数据处理化分不同的Handler处理
+
+```java
+if (LOGIN_REQUEST.equals(command)) {
+	//
+} else {
+    ctx.fireChannelRead(packet); 
+}
+```
+
+这样可以使得每添加一个指令处理器，逻辑处理框架都一致；但会多出一个`else`进行传递无法处理的对象给下一个指令，重复度较高。Netty针对这种抽象出了`SimpleChannelInboundHandler`对象，将类型判断和对象传递都自当实现了，我们只需要关注处理逻辑即可。
+
+> LoginRequestHandler.java
+
+```java
+public class LoginRequestHandler extends SimpleChannelInboundHandler<LoginRequestPacket> {
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, LoginRequestPacket loginRequestPacket) {
+        // 登录逻辑
+    }
+}
+```
+
+这样对对象的判断和传递都交给了父类`SimpleChannelInboundHandler`
+
+同理，编写其他处理器只需要更改泛型类型即可。
+
+> MessageRequestHandler.java
+
+```java
+public class MessageRequestHandler extends SimpleChannelInboundHandler<MessageRequestPacket> {
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, MessageRequestPacket messageRequestPacket) {
+
+    }
+}
+```
+
+
+
+
+
+----
+
+上面介绍了Netty内部自带的解码类，同样Netty也自带了编码类，帮助我们对数据的编码进行优化；
+
+**MessageToByteEncoder**
+
+**处理逻辑**
+
+```java
+public class PacketEncoder extends MessageToByteEncoder<Packet> {
+
+    @Override
+    protected void encode(ChannelHandlerContext ctx, Packet packet, ByteBuf out) {
+        PacketCodeC.INSTANCE.encode(out, packet);
+    }
+}
+```
+
+这样就不需要自己创建`ByteBuf`对象，并且通过不同的handler也不需要对数据再一次进行编码。
+
+这里读者看出，使用这个类，就需要更改我们自己的`encode`的方法。
+
+**原本的代码**
+
+```java
+public ByteBuf encode(Packet packet) {
+    // 1. 创建 ByteBuf 对象
+    ByteBuf byteBuf = ByteBufAllocator.DEFAULT.ioBuffer();
+    // 2. 序列化 java 对象
+
+    // 3. 实际编码过程
+
+    return byteBuf;
+}
+```
+
+**优化后**
+
+```java
+// 更改后的定义
+public void encode(ByteBuf byteBuf, Packet packet) {
+    // 1. 序列化 java 对象
+
+    // 2. 实际编码过程
+}
+```
+
+
+
+现在进行总结，我们自定义pipeline对什么进行了优化
+
+1. 编解码的优化（`ByteToMessageDecoder`,`MessageToByteEncoder`
+2. 将对某个指令的逻辑处理单独提出，并且对handler数据的传递进行优化  `SimpleChannelInboundHandler`
+
+#### 构建客户端和服务端的pipeline
+
+![img](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/10/14/1666fd9cc2b9c089~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+
+
+代码较多，请读者自行去笔者仓库查看源码。[github]([Netty/src/main/java/com/wuxie/netty at master · zqywuxie/Netty (github.com)](https://github.com/zqywuxie/Netty/tree/master/src/main/java/com/wuxie/netty/Demo6))
+
+
+
+### 实战Ⅴ：拆包和粘包
+
+---
+
+
+
+拿双向通信的代码进行更改，仓库`Demo2`
+
+
+
+> ClientHandler.java
+
+```java
+public class FirstClientHandler extends ChannelInboundHandlerAdapter {
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        for (int i = 0; i < 1000; i++) {
+            ByteBuf buffer = getByteBuf(ctx);
+            ctx.channel().writeAndFlush(buffer);
+        }
+    }
+
+    private ByteBuf getByteBuf(ChannelHandlerContext ctx) {
+        ByteBuf buffer = ctx.alloc().buffer();
+        byte[] bytes = "你好，我们在学习netty".getBytes(Charset.forName("utf-8"));
+        buffer.writeBytes(bytes);
+        return buffer;
+    }
+
+}
+```
+
+向服务端连续发送1000条数据，我们希望得到的结果是连续的1000条完整的数据。但是实际如下，出现了三种数据
+
+1. 正常数据
+2. 多个字符连在一起，定义这种`ByteBuf` 为粘包
+3. 字符串被拆开了，这也是为什么会出现不完整的字符串和乱码(那一段的字节不完整，字自然也不完整)。定义这种`ByteBuf`为半包
+
+
+
+![image-20230310202348592](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310202348592.png)
+
+
+
+#### 出现原因
+
+---
+
+我们需要知道，尽管我们在应用层面使用了 Netty，但是对于操作系统来说，只认 TCP 协议，尽管我们的应用层是按照 ByteBuf 为 单位来发送数据，但是到了**底层操作系统仍然是按照字节流发送数据**，因此，数据到了服务端，也是按照字节流的方式读入，然后到了 Netty 应用层面，重新拼装成 ByteBuf，**而这里的 ByteBuf 与客户端按顺序发送的 ByteBuf 可能是不对等的**。因此，我们需要在客户端根据自定义协议来组装我们应用层的数据包，然后在服务端根据我们的应用层的协议来组装数据包，这个过程通常在服务端称为拆包，而在客户端称为粘包。
+
+拆包和粘包是相对的，一端粘了包，另外一端就需要将粘过的包拆开，举个栗子，发送端将三个数据包粘成两个 TCP 数据包发送到接收端，接收端就需要根据应用协议将两个数据包重新组装成三个数据包。
+
+
+
+#### 拆包原理
+
+---
+
+在没有 Netty 的情况下，用户如果自己需要拆包，基本原理就是不断从 TCP 缓冲区中读取数据，每次读取完都需要判断是否是一个完整的数据包。如果不是完整的包就继续读取数据，如果是则拼接上次读取的数据，构成一个**完整**的业务数据传递到业务逻辑中，多余的数据仍然保留与下次读取到的数据进行拼接，如此重复操作。
+
+现在这种操作很麻烦，需要自定义协议和异常等实现。但Netty显然自带一些开箱即用的拆包器
+
+
+
+#### Netty的拆包器
+
+---
+
+##### 1. 固定长度的拆包器 FixedLengthFrameDecoder
+
+如果你的应用层协议非常简单，每个数据包的长度都是固定的，比如 100，那么只需要把这个拆包器加到 pipeline 中，Netty 会把一个个长度为 100 的数据包 (ByteBuf) 传递到下一个 channelHandler。
+
+##### 2. 行拆包器 LineBasedFrameDecoder
+
+从字面意思来看，发送端发送数据包的时候，每个数据包之间以换行符作为分隔，接收端通过 LineBasedFrameDecoder 将粘过的 ByteBuf 拆分成一个个完整的应用层数据包。
+
+##### 3. 分隔符拆包器 DelimiterBasedFrameDecoder
+
+DelimiterBasedFrameDecoder 是行拆包器的通用版本，只不过我们可以**自定义分隔符**。
+
+##### 4. 基于长度域拆包器 LengthFieldBasedFrameDecoder
+
+最后一种拆包器是最通用的一种拆包器，只要你的**自定义协议中包含长度域字段**，均可以使用这个拆包器来实现应用层拆包。由于上面三种拆包器比较简单，读者可以自行写出 demo，接下来，我们就结合我们小册的自定义协议，来学习一下如何使用基于长度域的拆包器来拆解我们的数据包。
+
+
+
+#### 使用LengthFieldBasedFrameDecoder
+
+---
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/13/1653028b36ee5d81~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+如下图源码，
+
+第一个参数为数据包的最大长度
+第二个参数为长度域的偏移量，也就上图协议中到达数据长度的长度，也就是4+1+1+1=7个字节
+
+第三个参数为数据的长度 4个字节
+
+```java
+public LengthFieldBasedFrameDecoder(
+        int maxFrameLength,
+        int lengthFieldOffset, int lengthFieldLength) {
+    this(maxFrameLength, lengthFieldOffset, lengthFieldLength, 0, 0);
+}
+```
+
+```java
+new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 7, 4);
+```
+
+
+
+这里我们使用实战IV中代码进行测试 `Demo6`
+
+> NettyClient.java
+
+连续发送1000条数据，会报错
+
+```java
+public static void startConsoleThread(Channel channel) {
+new Thread(() -> {
+while (!Thread.interrupted()) {
+    if (LoginUtil.hasLogin(channel)) {
+        for (int i = 0; i < 1000; i++) {
+            System.out.println("======请输入消息到服务端");
+//                        Scanner scanner = new Scanner(System.in);
+//                        String message = scanner.nextLine();
+            String  message = "我们在学习netty";
+
+            channel.writeAndFlush(new MessageRequestPacket(message));
+        }
+
+    }
+}
+}).start();
+
+}
+```
+
+
+
+> io.netty.[handler](https://so.csdn.net/so/search?q=handler&spm=1001.2101.3001.7020).codec.DecoderException: java.lang.IndexOutOfBoundsException:
+> readerIndex(11) + length(565) exceeds writerIndex(512): PooledUnsafeDirectByteBuf(ridx: 11, widx: 512, cap: 512)
+
+数据包的长度为565，而`ByteToMessageDecoder`只处理到了512。我并没有找到控制`ByteToMessageDecoder`最大读写的方法。
+**但是，因为解码器继承`ChannelInboundHandlerAdapter`类，而我们可以使用多个处理器一起处理数据**。
+
+
+
+所以这里我们加上拆包器(服务端和客户端都加上)，然后进行测试
+
+```java
+bootstrap
+.group(workerGroup)
+.channel(NioSocketChannel.class)
+.handler(new ChannelInitializer<NioSocketChannel>() {
+
+@Override
+protected void initChannel(NioSocketChannel nioSocketChannel) throws Exception {
+    nioSocketChannel.pipeline().addLast(new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE,7,4));
+    nioSocketChannel.pipeline().addLast(new PacketDecoder());
+    nioSocketChannel.pipeline().addLast(new LoginResponseHandler());
+    nioSocketChannel.pipeline().addLast(new MessageResponseHandler());
+    nioSocketChannel.pipeline().addLast(new PacketEncoder());
+}
+});
+```
+
+
+
+![image-20230310205345470](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310205345470.png)
+
+可以看到数据没有任何问题，也没有任何报错传输成功。
+
+
+
+#### 拒绝非本协议的连接
+
+---
+
+最一开始我们设计协议的时候，说到一个`魔数`，是用来判断是否是本协议的数据。而这个判断肯定是要获得数据后马上进行判断，而我们一开始添加的handler是`LengthFieldBasedFrameDecoder`，那么我们就可以对它进行优化。
+
+```java
+public class Spliter extends LengthFieldBasedFrameDecoder {
+
+    private static final int LENGTH_FIELD_OFFSET = 7;
+
+    public static final int LENGTH_FIELD_LENGTH = 4;
+    public Spliter (){
+        //调用父类构造器  LengthFieldBasedFrameDecoder(Integer.MAX_VALUE,LENGTH_FIELD_OFFSET,LENGTH_FIELD_LENGTH)
+        super(Integer.MAX_VALUE,LENGTH_FIELD_OFFSET,LENGTH_FIELD_LENGTH);
+    }
+
+    @Override
+    protected Object decode(ChannelHandlerContext ctx, ByteBuf in) throws Exception {
+        //in 缓存区的开头，获得读指;然后getint读取一个整数(魔数)
+        if (in.getInt(in.readerIndex()) != PacketCodeC.MAGIC_NUMBER){
+            ctx.channel().close();
+            return null;
+        }
+
+        return super.decode(ctx, in);
+    }
+}
+
+```
+
+
+
+重写deocde()方法，每次从channel中读取到数据时，都会进行调用。
+
+
+
+使用windows中的`talnet 127.0.0.1 8000 `,进行测试，并且发送非自定义协议的内容。
+
+可见直接拦截了，断开了连接。
+
+![image-20230310214701769](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310214701769.png)
+
+
+
+#### 服务端和客户端的 pipeline 结构
+
+---
+
+
+
+
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/28/1657e014321e00b0~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
