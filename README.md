@@ -898,7 +898,7 @@ public class JSONSerializer implements Serializer {
 
 
 
-### 7.实战：实现客户端登录
+### 7.实战Ⅱ：实现客户端登录
 
 ![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/14/16535d7424e02d3a~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
 
@@ -907,3 +907,430 @@ public class JSONSerializer implements Serializer {
 1. 构建登录请求对象编码为ByteBuf传输到服务端。
 2. 服务端解码后进行登录校验，然后构造登录相应对象，依然经过编码传输回客户端。
 3. 客户端拿到登录响应判断是否登录成功
+
+
+
+#### protocol
+
+在上面自定义协议中，添加一个响应包类
+
+> LoginResponsePacket.java
+
+```java
+@Data
+public class LoginResponsePacket extends Packet{
+
+
+    private String reason;
+
+    private Boolean isSuccess;
+    @Override
+    public Byte getCommand() {
+        return LOGIN_RESPONSE;
+    }
+}
+
+```
+
+
+
+> command.java
+
+新增登录响应指令
+
+```java
+public interface command {
+    /**
+     * 登录指令
+     */
+    Byte LOGIN_REQUEST = 1;
+
+    /**
+     * 登录响应指令
+     */
+
+    Byte LOGIN_RESPONSE = 2;
+}
+```
+
+
+
+#### server
+
+我们将实战Ⅰ中的客户端和服务端代码进行修改
+
+> FirstServerHandler.java
+
+```java
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+
+
+        ByteBuf requestByteBuf= (ByteBuf) msg;
+        /**
+         * 解码
+         */
+
+        Packet packet = PacketCodeC.getInstance().decode(requestByteBuf);
+
+        /**
+         * 判断是否为请求数据包
+         */
+        if (LOGIN_REQUEST.equals(packet.getCommand())) {
+            LoginRequestPacket loginRequestPacket = (LoginRequestPacket) packet;
+
+            LoginResponsePacket loginResponsePacket = new LoginResponsePacket();
+           
+ 
+            if (valid(loginRequestPacket)){
+                System.out.println("鉴权成功");
+                loginResponsePacket.setIsSuccess(true);
+            } else {
+                System.out.println("鉴权失败");
+                loginResponsePacket.setReason("密码错误");
+                loginResponsePacket.setIsSuccess(false);
+            }
+
+            ByteBuf responseByteBuf = PacketCodeC.getInstance().encode(loginResponsePacket);
+
+            ctx.channel().writeAndFlush(responseByteBuf);
+        }
+   }
+
+    /**
+     * 鉴权逻辑
+     */
+    private boolean valid(LoginRequestPacket loginRequestPacket){
+        return true;
+    }
+```
+
+
+
+> FirstClientHandler.java
+
+
+
+```java
+    /**
+     * 客户端连接便会执行
+     */
+@Override
+public void channelActive(ChannelHandlerContext ctx) throws Exception {
+    System.out.println(new Date()+": 客户端开始登录");
+
+    LoginRequestPacket loginRequestPacket = new LoginRequestPacket();
+
+    loginRequestPacket.setUserId(UUID.randomUUID().toString());
+    loginRequestPacket.setUsername("wuxie");
+    loginRequestPacket.setPassword("123");
+
+    //使用到单例模式创建
+    ByteBuf byteBuf = PacketCodeC.getInstance().encode(loginRequestPacket);
+    ctx.channel().writeAndFlush(byteBuf);
+}
+
+    /**
+     * 获取服务端发回的响应数据
+     */
+
+@Override
+public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+    ByteBuf byteBuf = (ByteBuf) msg;
+
+    Packet packet = PacketCodeC.getInstance().decode(byteBuf);
+
+    if(LOGIN_RESPONSE.equals(packet.getCommand())){
+        LoginResponsePacket loginResponsePacket = (LoginResponsePacket) packet;
+
+        if (loginResponsePacket.getIsSuccess()){
+            System.out.println(new Date()+": 客户端登录成功");
+        } else {
+            System.out.println(new Date()+": 客户端登录失败，原因:"+loginResponsePacket.getReason());
+        }
+    }
+
+
+}
+```
+
+注意：
+
+每个hanler处理器建议重写一个方法，进行一个异常捕获，及时关闭``ChannelHandlerContext`
+
+```java
+@Override
+public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+    super.exceptionCaught(ctx, cause);
+    Channel channel = ctx.channel();
+    if (channel.isActive()){
+        ctx.close();
+    }
+}
+```
+
+
+
+结果如下：
+
+
+
+![image-20230310083345241](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310083345241.png)
+
+
+
+![image-20230310083352133](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310083352133.png)
+
+
+
+> 注意
+
+关于出现内容泄露的问题:
+
+如果你的channelHandler是继承自ChannelInboundHandlerAdapter，在channelRead 中接受到的入站byteBuffer是需要手工release的，但是如果是SimpleChannelInboundHandler则不需要。
+
+
+
+### 8.实战Ⅲ 客户端和服务端收发消息
+
+#### protocol
+
+添加消息请求和响应指令
+
+> command.java
+
+```java
+/**
+ * 消息发送
+ */
+
+Byte MESSAGE_REQUEST = 3;
+
+/**
+ * 消息响应指令
+ */
+
+Byte MESSAGE_RESPONSE = 4;
+```
+
+
+
+添加消息请求和响应包
+
+> MessageRequestPacket，MessageResponsePacket.java
+
+```java
+@Data
+public class MessageResponsePacket extends Packet {
+
+    private String message;
+
+
+
+    @Override
+    public Byte getCommand() {
+        return MESSAGE_RESPONSE;
+    }
+}
+
+===============
+@Data
+public class MessageRequestPacket extends Packet {
+
+    private String message;
+
+
+
+    @Override
+    public Byte getCommand() {
+        return MESSAGE_REQUEST;
+    }
+}
+```
+
+
+
+> 收发消息，需要判断用户是否登录。所以用到channel.attr的方法，进行添加登录标识
+>
+> Attributes.java
+
+```java
+public interface Attributes {
+    AttributeKey<Boolean> LOGIN = AttributeKey.newInstance("login");
+}
+```
+
+
+
+> 注意新增了包类型，编码类里面需要添加相应类型
+>
+> PacketCodeC.java
+
+```java
+static {
+    packetTypeMap = new HashMap<>();
+    packetTypeMap.put(LOGIN_REQUEST, LoginRequestPacket.class);
+    packetTypeMap.put(LOGIN_RESPONSE,LoginResponsePacket.class);
+    /**
+    * 注意添加
+    */
+    packetTypeMap.put(MESSAGE_REQUEST,MessageRequestPacket.class);
+    packetTypeMap.put(MESSAGE_RESPONSE,MessageResponsePacket.class);
+    serializerMap = new HashMap<>();
+    Serializer jsonSerializer = new JSONSerializer();
+    serializerMap.put(jsonSerializer.getSerializerAlgorithm(),jsonSerializer);
+}
+```
+
+
+
+#### utils
+
+> 新增工具类，进行登录的标记和判断
+>
+> LoginUtil.java
+
+```java
+public class LoginUtil {
+    public static void markAsLogin(Channel channel) {
+        channel.attr(Attributes.LOGIN).set(true);
+    }
+
+    public static boolean hasLogin(Channel channel) {
+        Attribute<Boolean> loginAttr = channel.attr(Attributes.LOGIN);
+
+        return loginAttr.get() != null;
+    }
+}
+```
+
+
+
+#### client
+
+> 客户端发送消息，新创建一个线程进行消息发送
+>
+> NettyClient.java
+
+这里判断逻辑有点不对，只是简单展示下，读者可以自行更改。
+
+```java
+
+public static void startConsoleThread(Channel channel) {
+    new Thread(() -> {
+        while (!Thread.interrupted()) {
+            if (LoginUtil.hasLogin(channel)) {
+                System.out.println("======请输入消息到服务端");
+                Scanner scanner = new Scanner(System.in);
+                String message = scanner.nextLine();
+
+                MessageRequestPacket messageRequestPacket = new MessageRequestPacket();
+                messageRequestPacket.setMessage(message);
+                ByteBuf byteBuf = PacketCodeC.getInstance().encode(messageRequestPacket);
+                channel.writeAndFlush(byteBuf);
+            } 
+        }
+    }).start();
+
+}
+========== 
+private static void connect(Bootstrap bootstrap, String host, int port, int retry) {
+    bootstrap.connect(host, port).addListener(future -> {
+        if (future.isSuccess()) {
+            System.out.println("连接成功!");
+			
+            Channel channel = ((ChannelFuture) future).channel();
+            startConsoleThread(channel);
+        } else if (retry == 0) {
+            //
+        } else {
+            //
+        }
+}
+```
+
+
+
+> FirstClientHandler.java  添加读取响应逻辑
+
+```java
+if (LOGIN_RESPONSE.equals(command)) {
+        LoginResponsePacket loginResponsePacket = (LoginResponsePacket) packet;
+
+        if (loginResponsePacket.getIsSuccess()) {
+            //登录标记
+            LoginUtil.markAsLogin(ctx.channel());
+            System.out.println(new Date() + ": 客户端登录成功");
+        } else {
+            System.out.println(new Date() + ": 客户端登录失败，原因:" + loginResponsePacket.getReason());
+        }
+    } else if (MESSAGE_RESPONSE.equals(command)){
+
+        MessageResponsePacket messageResponsePacket= (MessageResponsePacket) packet;
+        System.out.println(new Date()+": 收到服务端的消息 :" + messageResponsePacket.getMessage());
+    }
+    byteBuf.release();
+```
+
+
+
+
+
+#### server
+
+> FirstServerHandler.java
+
+```java
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+
+
+        ByteBuf requestByteBuf = (ByteBuf) msg;
+        /**
+         * 解码
+         */
+
+        Packet packet = PacketCodeC.getInstance().decode(requestByteBuf);
+
+        Byte command = packet.getCommand();
+        /**
+         * 判断是否为请求数据包
+         */
+        if (LOGIN_REQUEST.equals(command)) {
+			....
+        } else if (MESSAGE_REQUEST.equals(command)) {
+            MessageRequestPacket messageRequestPacket = (MessageRequestPacket) packet;
+            System.out.println(new Date() + ": 收到客户端消息 :" + messageRequestPacket.getMessage());
+
+            // 收到消息进行响应
+            MessageResponsePacket messageResponsePacket = new MessageResponsePacket();
+            messageResponsePacket.setMessage("服务端回复【" + messageRequestPacket.getMessage() + "】");
+
+            ByteBuf responseByteBuf = PacketCodeC.getInstance().encode(messageResponsePacket);
+
+            ctx.channel().writeAndFlush(responseByteBuf);
+
+        }
+
+        requestByteBuf.release();
+    }
+```
+
+
+
+
+
+
+
+![image-20230310092932610](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310092932610.png)
+
+![image-20230310092937474](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230310092937474.png)
+
+
+
+#### 总结
+
+1. 定义消息请求和响应的包装类
+2. 使用channel的`attr`方法，进行添加登录标记
+3. 开启新线程进行客户端的消息发送
+4. 服务单获得消息并且对客户端做出响应

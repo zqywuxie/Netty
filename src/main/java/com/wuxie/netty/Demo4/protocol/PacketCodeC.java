@@ -8,8 +8,7 @@ import io.netty.buffer.ByteBufAllocator;
 import java.util.HashMap;
 import java.util.Map;
 
-import static com.wuxie.netty.Demo4.protocol.command.LOGIN_REQUEST;
-import static com.wuxie.netty.Demo4.protocol.command.LOGIN_RESPONSE;
+import static com.wuxie.netty.Demo4.protocol.command.*;
 
 
 /**
@@ -30,6 +29,8 @@ public class PacketCodeC {
         packetTypeMap = new HashMap<>();
         packetTypeMap.put(LOGIN_REQUEST, LoginRequestPacket.class);
         packetTypeMap.put(LOGIN_RESPONSE,LoginResponsePacket.class);
+        packetTypeMap.put(MESSAGE_REQUEST,MessageRequestPacket.class);
+        packetTypeMap.put(MESSAGE_RESPONSE,MessageResponsePacket.class);
         serializerMap = new HashMap<>();
         Serializer jsonSerializer = new JSONSerializer();
         serializerMap.put(jsonSerializer.getSerializerAlgorithm(),jsonSerializer);

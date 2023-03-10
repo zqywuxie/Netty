@@ -1,12 +1,20 @@
 package com.wuxie.netty.Demo4.client;
 
+import com.wuxie.netty.Demo4.protocol.MessageRequestPacket;
+import com.wuxie.netty.Demo4.protocol.MessageResponsePacket;
+import com.wuxie.netty.Demo4.protocol.PacketCodeC;
+import com.wuxie.netty.Demo4.utils.LoginUtil;
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 
 import java.util.Date;
+import java.util.Scanner;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -49,6 +57,9 @@ public class NettyClient {
         bootstrap.connect(host, port).addListener(future -> {
             if (future.isSuccess()) {
                 System.out.println("连接成功!");
+
+                Channel channel = ((ChannelFuture) future).channel();
+                startConsoleThread(channel);
             } else if (retry == 0) {
                 System.err.println("重试次数已用完，放弃连接！");
             } else {
@@ -60,5 +71,23 @@ public class NettyClient {
                 bootstrap.config().group().schedule(() -> connect(bootstrap, host, port, retry - 1), delay, TimeUnit.SECONDS);
             }
         });
+    }
+
+    public static void startConsoleThread(Channel channel) {
+        new Thread(() -> {
+            while (!Thread.interrupted()) {
+                if (LoginUtil.hasLogin(channel)) {
+                    System.out.println("======请输入消息到服务端");
+                    Scanner scanner = new Scanner(System.in);
+                    String message = scanner.nextLine();
+
+                    MessageRequestPacket messageRequestPacket = new MessageRequestPacket();
+                    messageRequestPacket.setMessage(message);
+                    ByteBuf byteBuf = PacketCodeC.getInstance().encode(messageRequestPacket);
+                    channel.writeAndFlush(byteBuf);
+                }
+            }
+        }).start();
+
     }
 }
