@@ -20,27 +20,28 @@ public class NettyServer {
         NioEventLoopGroup workGroup = new NioEventLoopGroup();
         ServerBootstrap serverBootstrap = new ServerBootstrap();
         serverBootstrap
-                .group(bossGroup,workGroup)
+                .group(bossGroup, workGroup)
                 .channel(NioServerSocketChannel.class)
                 .childHandler(new ChannelInitializer<NioSocketChannel>() {
-                    protected void initChannel(NioSocketChannel channel){
+                    protected void initChannel(NioSocketChannel channel) {
+                        channel.pipeline().addLast(new LifeCyCleTestHandler());
                         channel.pipeline().addLast(new FirstServerHandler());
 
-                        channel.pipeline().addLast(new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE,7,4));
+                        channel.pipeline().addLast(new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 7, 4));
                     }
                 });
-        bind(serverBootstrap,8000);
+        bind(serverBootstrap, 8000);
     }
 
-    private static void bind(ServerBootstrap serverBootstrap,final int port){
+    private static void bind(ServerBootstrap serverBootstrap, final int port) {
         serverBootstrap.bind(port).addListener(new GenericFutureListener<Future<? super Void>>() {
             @Override
             public void operationComplete(Future<? super Void> future) throws Exception {
-                if (future.isSuccess()){
-                    System.out.println("端口["+port+"]绑定成功");
+                if (future.isSuccess()) {
+                    System.out.println("端口[" + port + "]绑定成功");
                 } else {
-                    System.out.println("端口["+port+"]绑定失败");
-                    bind(serverBootstrap,port+1);
+                    System.out.println("端口[" + port + "]绑定失败");
+                    bind(serverBootstrap, port + 1);
                 }
             }
         });

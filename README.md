@@ -1524,7 +1524,7 @@ ChannelHandlerContext
 
 
 
-### 实战Ⅳ：构建客户端与服务端 pipeline
+### 10. 实战Ⅳ：构建客户端与服务端 pipeline
 
 通过Netty内置的ChannelHandler进行构建
 
@@ -1717,7 +1717,7 @@ public void encode(ByteBuf byteBuf, Packet packet) {
 
 
 
-### 实战Ⅴ：拆包和粘包
+### 11.实战Ⅴ：拆包和粘包
 
 ---
 
@@ -1948,3 +1948,741 @@ public class Spliter extends LengthFieldBasedFrameDecoder {
 
 
 ![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/28/1657e014321e00b0~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+
+
+### 12.channelHandler的生命周期
+
+---
+
+
+
+> 本节针对读数据的相关逻辑，讨论`ChannelInboundHandler`
+
+基于`ChannelInboundHandler`自定义一个handler
+
+> LifeCyCleTestHandler.java
+
+```java
+public class LifeCyCleTestHandler extends ChannelInboundHandlerAdapter {
+@Override
+public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+    System.out.println("逻辑处理器被添加：handlerAdded()");
+    super.handlerAdded(ctx);
+}
+
+@Override
+public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
+    System.out.println("channel 绑定到线程(NioEventLoop)：channelRegistered()");
+    super.channelRegistered(ctx);
+}
+
+@Override
+public void channelActive(ChannelHandlerContext ctx) throws Exception {
+    System.out.println("channel 准备就绪：channelActive()");
+    super.channelActive(ctx);
+}
+
+@Override
+public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+    System.out.println("channel 有数据可读：channelRead()");
+    super.channelRead(ctx, msg);
+}
+
+@Override
+public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
+    System.out.println("channel 某次数据读完：channelReadComplete()");
+    super.channelReadComplete(ctx);
+}
+
+@Override
+public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+    System.out.println("channel 被关闭：channelInactive()");
+    super.channelInactive(ctx);
+}
+
+@Override
+public void channelUnregistered(ChannelHandlerContext ctx) throws Exception {
+    System.out.println("channel 取消线程(NioEventLoop) 的绑定: channelUnregistered()");
+    super.channelUnregistered(ctx);
+}
+
+@Override
+public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+    System.out.println("逻辑处理器被移除：handlerRemoved()");
+    super.handlerRemoved(ctx);
+}
+}
+```
+
+
+
+添加到pipeline中，然后客户端发送消息，服务端的展示
+
+![image-20230311170030220](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311170030220.png)
+
+
+
+由上可以得到回调顺序:
+
+`handlerAdded() -> channelRegistered() -> channelActive() -> channelRead() -> channelReadComplete()`
+
+
+
+1. `handlerAdded()` ：指的是当检测到新连接之后，调用 `ch.pipeline().addLast(new LifeCyCleTestHandler());` 之后的回调，表示在当前的 channel 中，已经成功添加了一个 handler 处理器。
+2. `channelRegistered()`：这个回调方法，表示当前的 channel 的所有的逻辑处理已经**和某个 NIO 线程建立了绑定关系**
+3. `channelActive() `：当 channel 的所有的业务逻辑链准备完毕（也就是说 channel 的 pipeline 中已经添加完所有的 handler）以及绑定好一个 NIO 线程之后，这条连接算是真正激活了，接下来就会回调到此方法。
+4. `channelRead()`：客户端向服务端发来数据，每次都会回调此方法，表示有数据可读。
+5. `channelReadComplete()`：服务端每次读完一次完整的数据之后，回调该方法，表示数据读取完毕。
+
+---
+
+
+
+关闭客户端后，即channel被关闭了
+
+![image-20230311170309266](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311170309266.png)
+
+
+
+回调顺序为：
+
+`channelInactive() -> channelUnregistered() -> handlerRemoved()`
+
+1. `channelInactive()`: 表面这条连接已经被关闭了，这条连接在 TCP 层面已经不再是 ESTABLISH(建立) 状态了
+2. `channelUnregistered()`: 既然连接已经被关闭，那么与这条连接绑定的线程就不需要对这条连接负责了，这个回调就表明与这条连接对应的 NIO **线程移除掉对这条连接的处理**
+3. `handlerRemoved()`：最后，我们给这条连接上添加的所有的业务逻辑处理器都给移除掉。
+
+
+
+![img](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/10/14/1666fdc2bdcf3f9e~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+
+
+
+
+#### 用法举例
+
+---
+
+
+
+##### 1.ChannelInitializer 实现原理
+
+我们添加一个处理器，都是在`ChannelInitializer`里面的`initChannel`方法中，拿到channel对应的pipeline，然后向里面添加handler。查看源码
+
+
+
+> ChannelInitializer.java
+
+```java
+protected abstract void initChannel(C ch) throws Exception;
+
+public final void channelRegistered(ChannelHandlerContext ctx) throws Exception {
+            // Normally this method will never be called as handlerAdded(...) should call initChannel(...) and remove
+        // the handler.
+        if (initChannel(ctx)) {
+            ctx.pipeline().fireChannelRegistered();
+        } else {
+            ctx.fireChannelRegistered();
+        }
+}
+
+public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+    // ...
+    if (ctx.channel().isRegistered()) {
+        initChannel(ctx);
+    }
+    // ...
+}
+
+private boolean initChannel(ChannelHandlerContext ctx) throws Exception {
+    if (initMap.putIfAbsent(ctx, Boolean.TRUE) == null) {
+        initChannel((C) ctx.channel());
+        // ...
+        return true;
+    }
+    return false;
+}
+```
+
+
+
+1. `ChannelInitializer` 定义了一个抽象的方法 `initChannel()`，这个抽象方法由我们自行实现，我们在服务端启动的流程里面的实现逻辑就是往 pipeline 里面塞我们的 handler 链
+2. `handlerAdded()` 和 `channelRegistered()` 方法，都会尝试去调用 `initChannel()` 方法，`initChannel()` 使用 `putIfAbsent()` 来防止 `initChannel()` 被调用多次
+3. 读者可以看`channelRegistered` 中的英文，可知这个方法一般都不会调用
+
+> 通常，这个方法永远不会被调用，因为handlerAdded（…）应该调用initChannel（…）并移除处理程序。
+>
+> 执行了handlerAdded()方法，逻辑最终会把ChannelInitializer从pipeline中移除掉，最后有个remove方法。所以在后续的register事件中，自然就调不到ChannelInitializer中的channelRegistered()方法了。
+
+
+
+##### 2.handlerAdded() 与 handlerRemoved()
+
+这两个方法通常可以用在一些资源的申请和释放
+
+##### 3. channelActive() 与 channelInActive()
+
+1. 对我们的应用程序来说，这两个方法表明的含义是 TCP 连接的建立与释放，通常我们在这两个回调里面统计单机的连接数，`channelActive()` 被调用，连接数加一，`channelInActive()` 被调用，连接数减一
+2. 另外，我们也可以在 `channelActive()` 方法中，实现对客户端连接 ip 黑白名单的过滤，具体这里就不展开了
+
+##### 4. channelRead()
+
+前面实战Ⅴ拆包和粘包，得知服务端根据自定义协议来进行拆包，其实就是在这个方法里面，每次读到一定的数据，都会累加到一个容器里面，然后判断是否能够拆出来一个完整的数据包，如果够的话就拆了之后，往下进行传递
+
+
+
+##### 5. channelReadComplete()
+
+前面小节中，我们在每次向客户端写数据的时候，都通过 `writeAndFlush()` 的方法写并刷新到底层，其实这种方式不是特别高效，我们可以在之前调用 `writeAndFlush()` 的地方都调用 `write()` 方法，然后在这个方面里面调用 `ctx.channel().flush()` 方法，相当于一个批量刷新的机制，当然，如果你对性能要求没那么高，`writeAndFlush()` 足矣。
+
+
+
+### 13.实战Ⅵ:使用 channelHandler 的热插拔实现客户端身份校验
+
+`Demo8`
+
+前面实战中，说过登录校验代码有点问题。即使没有进行登录校验，服务端收到消息后还是会对消息进行处理。所以对此进行优化
+
+#### 1.身份检验
+
+---
+
+之前的登录标记是在客户端接收到登录成功消息后，这次我们在服务端鉴权成功后进行添加
+
+> LoginRequestHandler.java
+
+```java
+if (valid(loginRequestPacket)) {
+
+    // 鉴权后 添加标志
+    LoginUtil.markAsLogin(ctx.channel());
+	//
+} else {
+	//
+}
+```
+
+
+
+并且之前客户端发送消息之前需要进行判断是否登录
+
+```java
+public static void startConsoleThread(Channel channel) {
+    new Thread(() -> {
+        while (!Thread.interrupted()) {
+            if (LoginUtil.hasLogin(channel)) {
+                //
+            }
+        }
+    }).start();
+
+}
+```
+
+但我们学了pipeline后，完全可以将这件事交给它做，将其封装为一个用户认证的handler
+
+> AuthHandler.java
+
+```java
+public class AuthHandler extends ChannelInboundHandlerAdapter {
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        if (!LoginUtil.hasLogin(ctx.channel())){
+            ctx.channel().close();
+        } else {
+            super.channelRead(ctx, msg);
+        }
+    }
+}
+
+```
+
+然后在`MessageRequestHandler` 添加该handler，那么服务端接收到消息请求时就会进行认证
+
+```java
+    .childHandler(new ChannelInitializer<NioSocketChannel>() {
+        protected void initChannel(NioSocketChannel channel) {
+            channel.pipeline().addLast(new Spliter());
+            channel.pipeline().addLast(new PacketDecoder());
+            channel.pipeline().addLast(new LoginRequestHandler());
+            //先进行认证
+            channel.pipeline().addLast(new AuthHandler());
+            channel.pipeline().addLast(new MessageRequestHandler());
+            channel.pipeline().addLast(new PacketEncoder());
+        }
+    });
+```
+
+这样每次发送前都不需要自己去关注身份的问题，但是每次发送都会校验一遍，明显有些资源的浪费。但这里只是做了一个简单的校验，实际生产中会更加复杂全面，暂且不关注这些问题。
+
+
+
+#### 2.移除校验
+
+上面说了每次发送消息都会调用校验逻辑使得资源浪费，所以我们在连接没有中断，只需要校验一次，之后都不用需要校验了。
+
+> AuthHandler.java
+
+```java
+@Override
+public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+    if (!LoginUtil.hasLogin(ctx.channel())){
+        ctx.channel().close();
+    } else {
+        // 移除逻辑
+        ctx.pipeline().remove(this);
+        super.channelRead(ctx, msg);
+    }
+}
+
+@Override
+public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+    if (LoginUtil.hasLogin(ctx.channel())) {
+        System.out.println("当前连接登录校验完毕，无需再次验证，AuthHandler移除");
+    } else {
+        System.out.println("无登录验证，强制关闭连接");
+    }
+}
+```
+
+
+
+#### 3.身份校验演示
+
+![image-20230311191036068](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311191036068.png)
+
+
+
+##### 3.2无身份认证的演示
+
+不发起登录请求
+
+> LoginResponseHandler.java
+
+```java
+public class LoginResponseHandler extends SimpleChannelInboundHandler<LoginResponsePacket> {
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+
+        //使用到单例模式创建
+//        ctx.channel().writeAndFlush(loginRequestPacket);
+    }
+
+```
+
+
+
+![image-20230311191924101](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311191924101.png)
+
+
+
+这时候连接关闭了，我们需要进行一个判断客户端连接是否被关闭
+
+```java
+@Override
+public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+    System.out.println("连接被关闭");
+    super.channelInactive(ctx);
+}
+```
+
+
+
+![image-20230311192329772](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311192329772.png)
+
+
+
+#### 总结：
+
+1. 对于很多重复的业务逻辑，我们可以单独提出handler交给pipeline进行处理
+2. 对于某一个逻辑不需要执行很多次时，可以进行动态删除，如上登录逻辑，执行一次后就进行删除，提高程序性能
+
+
+
+
+
+### 14.实战Ⅶ:客户端互聊原理和实现
+
+#### 原理
+
+---
+
+![单聊流程](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/9/1651c08e91cdd8e6~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+1.A要与B聊天，那么A与B就需要与服务器进行一个连接，然后进行一次登录鉴权的流程，**服务器保存用户标识和TCP连接的映射关系**
+
+2.A与B聊天，就要**发送一个B的标识**到服务器，然后服务器拿到B的标识，就找到B的TCP连接，将信息发送给B；
+
+
+
+#### 实现
+
+---
+#####  用户登录状态与 channel 的绑定
+
+我们先创建一个session对象，储存客户端相关数据
+
+> Session.java
+
+这里进行简答构造，实际构造的数据肯定不止如此
+
+```java
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class Session {
+    
+    // 用户唯一标识
+    private String userId;
+    
+    private String username;
+}
+```
+
+
+
+创建session相关工具类，进行TCP连接和session的连接等操作
+
+> SessionUtil.java
+
+```java
+public class SessionUtil {
+
+    // map 存储映射
+
+    public static final Map<String , Channel> userIdChannelMap = new ConcurrentHashMap<>();
+    /**
+     * 绑定
+     */
+    public static void bindSession (Session session , Channel channel){
+        userIdChannelMap.put(session.getUserId(),channel);
+        channel.attr(Attributes.SESSION).set(session);
+    }
+    /**
+     * 去除绑定
+     */    
+    public static void unBindSession(Channel channel){
+        if (hasLogin(channel)){
+            userIdChannelMap.remove(getLogin(channel).getUserId());
+            channel.attr(Attributes.SESSION).set(null);
+        }
+    }
+
+    /**
+     * 另一层面判断是否登录
+     */
+    
+    public static boolean hasLogin (Channel channel){
+        
+        return  channel.hasAttr(Attributes.SESSION);
+    }
+
+    /**
+     * 获得登录数据
+     */
+    
+    public static Session getLogin (Channel channel) {
+        return channel.attr(Attributes.SESSION).get();
+    }
+
+    /**
+     *  获得连接
+     */
+    public static Channel  getChannel (String userId) {
+        return userIdChannelMap.get(userId);
+    }
+}
+```
+
+1. 这里的`SessionUtil` 就是前面`LoginUtil`的一个重构。判断登录的同时也可以多携带一些相关数据
+
+
+
+> LoginResponsePacket.java
+
+对登录响应包添加新的字段name和id，让client也进行一个绑定
+
+```java
+@Data
+public class LoginResponsePacket extends Packet {
+
+    private String userId;
+
+    private String username;
+    private String reason;
+
+    private Boolean isSuccess;
+    @Override
+    public Byte getCommand() {
+        return LOGIN_RESPONSE;
+    }
+}
+
+```
+
+
+
+> LoginRequestHandler.java
+
+```java
+@Override
+protected void channelRead0(ChannelHandlerContext ctx, LoginRequestPacket loginRequestPacket) throws Exception {
+
+    System.out.println(new Date()+": 收到客户端登录请求....");
+
+    LoginResponsePacket loginResponsePacket = new LoginResponsePacket();
+    loginResponsePacket.setVersion(loginRequestPacket.getVersion());
+    if (valid(loginRequestPacket)) {
+
+        String userId =UUID.randomUUID().toString();
+
+        loginResponsePacket.setUserId(userId);
+        loginResponsePacket.setUsername(loginRequestPacket.getUsername());
+	
+        // 进行绑定
+        SessionUtil.bindSession(new Session(userId, loginResponsePacket.getUsername()),ctx.channel());
+        System.out.println(new Date()+": " + userId +"用户登录成功");
+        loginResponsePacket.setIsSuccess(true);
+    } else {
+        System.out.println(new Date()+": 用户登录失败");
+        loginResponsePacket.setReason("密码错误");
+        loginResponsePacket.setIsSuccess(false);
+    }
+
+    ctx.channel().writeAndFlush(loginResponsePacket);
+}
+```
+
+
+
+
+
+> LoginResponseHandler.java
+
+
+
+```java
+@Override
+protected void channelRead0(ChannelHandlerContext ctx, LoginResponsePacket loginResponsePacket) throws Exception {
+    String username = loginResponsePacket.getUsername();
+    String userId = loginResponsePacket.getUserId();
+    if (loginResponsePacket.getIsSuccess()) {
+        
+        ///绑定
+        SessionUtil.bindSession(new Session(userId,username),ctx.channel());
+        System.out.println(new Date() + ": 登录成功,用户ID"+userId);
+    } else {
+        System.out.println(new Date() + ": 客户端登录失败，原因:" + loginResponsePacket.getReason());
+    }
+}
+
+
+// 断线后进行处理
+@Override
+public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+    SessionUtil.unBindSession(ctx.channel());
+    super.channelInactive(ctx);
+}
+```
+
+
+
+##### 服务端接收消息并转发
+
+---
+
+
+
+重新定义下信息包内容
+
+> MessageRequestPacket.java
+
+```java
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class MessageRequestPacket extends Packet {
+
+    private String message;
+
+    // 发送消息的客户端ID
+    private String toUserId;
+
+    @Override
+    public Byte getCommand() {
+        return MESSAGE_REQUEST;
+    }
+}
+```
+
+
+
+> MessageResponsePacket.java
+
+```java
+@Data
+public class MessageResponsePacket extends Packet {
+
+    private String message;
+
+    private String fromUserId;
+
+    private String fromUserName;
+
+
+    @Override
+    public Byte getCommand() {
+        return MESSAGE_RESPONSE;
+    }
+}
+
+```
+
+
+
+> MessageRequestHandler.java
+
+```java
+@Override
+protected void channelRead0(ChannelHandlerContext ctx, MessageRequestPacket messageRequestPacket) throws Exception {
+
+
+    //1.拿到session
+    Session login = SessionUtil.getLogin(ctx.channel());
+
+    // 2. 通过发起方的信息构造发送的消息
+    MessageResponsePacket messageResponsePacket = new MessageResponsePacket();
+    messageResponsePacket.setFromUserId(login.getUserId());
+    messageResponsePacket.setFromUserName(login.getUsername());
+    messageResponsePacket.setMessage(messageRequestPacket.getMessage());
+
+    //3.拿到消息方的channel
+
+    Channel toUserChannel = SessionUtil.getChannel(messageRequestPacket.getToUserId());
+
+    //4.消息发送给接收方
+
+    if (toUserChannel != null  && SessionUtil.hasLogin(toUserChannel))  {
+
+        toUserChannel.writeAndFlush(messageResponsePacket);
+    } else {
+
+        System.err.println("[" + messageRequestPacket.getToUserId() +"] 不在线,发送失败");
+    }
+
+}
+```
+
+
+
+##### 客户端接收消息的处理
+
+---
+
+
+
+> MessageResponseHandler.java
+
+```java
+public class MessageResponseHandler extends SimpleChannelInboundHandler<MessageResponsePacket> {
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, MessageResponsePacket messageResponsePacket) throws Exception {
+
+        String fromUserId = messageResponsePacket.getFromUserId();
+        String fromUserName = messageResponsePacket.getFromUserName();
+        String message = messageResponsePacket.getMessage();
+
+        System.out.println(fromUserId + ":" + fromUserName + "->" +message);
+    }
+}
+```
+
+
+
+##### 客户端控制台登录和发送消息
+
+---
+
+
+
+> NettyClient.java
+
+```Java
+public static void startConsoleThread(Channel channel) {
+Scanner scanner = new Scanner(System.in);
+LoginRequestPacket loginRequestPacket = new LoginRequestPacket();
+new Thread(() -> {
+    while (!Thread.interrupted()) {
+
+        // 判断是否登录 , 是就发送消息 , 否则就登录
+            if (!SessionUtil.hasLogin(channel)) {
+                System.out.println("输入用户名登录:");
+                String username = scanner.nextLine();
+                loginRequestPacket.setUsername(username);
+
+                // 默认密码
+                loginRequestPacket.setPassword("123");
+                channel.writeAndFlush(loginRequestPacket);
+                waitForLoginResponse();
+            } else {
+
+                System.out.println("====输入你要发送的对象ID");
+                String toUserId = scanner.next();
+                System.out.println("====输入你要发送的消息");
+                String message = scanner.next();
+                channel.writeAndFlush(new MessageRequestPacket(message,toUserId));
+            }
+        }
+}).start();
+
+}
+
+// 模拟一个登录延迟
+public static void waitForLoginResponse(){
+    try {
+        Thread.sleep(1000);
+    } catch (InterruptedException e) {
+
+    }
+}
+```
+
+
+
+全部代码展示  `Demo8`
+
+
+
+##### 演示
+
+设置可以多开实例
+
+![image-20230311220950616](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311220950616.png)
+
+
+
+`server`
+
+---
+
+
+
+![image-20230311221046553](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311221046553.png)
+
+`client1`
+
+---
+
+
+
+![image-20230311221056203](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311221056203.png)
+
+`client2`
+
+---
+
+
+
+![image-20230311221107580](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311221107580.png)
