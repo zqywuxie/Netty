@@ -4,7 +4,6 @@ package com.wuxie.netty.Demo8.server.Handler;
 import com.wuxie.netty.Demo8.entity.Session;
 import com.wuxie.netty.Demo8.protocol.Request.LoginRequestPacket;
 import com.wuxie.netty.Demo8.protocol.Response.LoginResponsePacket;
-import com.wuxie.netty.Demo8.utils.LoginUtil;
 import com.wuxie.netty.Demo8.utils.SessionUtil;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;

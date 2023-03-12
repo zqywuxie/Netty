@@ -1,9 +1,9 @@
-package com.wuxie.netty.Demo8.client.Handler;
+package com.wuxie.netty.Demo9.client.Handler;
 
 
-import com.wuxie.netty.Demo8.entity.Session;
-import com.wuxie.netty.Demo8.protocol.Response.LoginResponsePacket;
-import com.wuxie.netty.Demo8.utils.SessionUtil;
+import com.wuxie.netty.Demo9.entity.Session;
+import com.wuxie.netty.Demo9.protocol.Response.LoginResponsePacket;
+import com.wuxie.netty.Demo9.utils.SessionUtil;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 
@@ -39,11 +39,5 @@ public class LoginResponseHandler extends SimpleChannelInboundHandler<LoginRespo
         } else {
             System.out.println(new Date() + ": 客户端登录失败，原因:" + loginResponsePacket.getReason());
         }
-    }
-
-    @Override
-    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-        SessionUtil.unBindSession(ctx.channel());
-        super.channelInactive(ctx);
     }
 }

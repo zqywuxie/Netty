@@ -1,18 +1,20 @@
-package com.wuxie.netty.Demo8.client;
+package com.wuxie.netty.Demo9.client;
 
-import com.wuxie.netty.Demo8.client.Handler.LoginResponseHandler;
-import com.wuxie.netty.Demo8.client.Handler.MessageResponseHandler;
-import com.wuxie.netty.Demo8.protocol.Request.LoginRequestPacket;
-import com.wuxie.netty.Demo8.protocol.Request.MessageRequestPacket;
-import com.wuxie.netty.Demo8.utils.PacketDecoder;
-import com.wuxie.netty.Demo8.utils.PacketEncoder;
-import com.wuxie.netty.Demo8.utils.SessionUtil;
-import com.wuxie.netty.Demo8.utils.Spliter;
+import com.wuxie.netty.Demo9.client.Handler.*;
+import com.wuxie.netty.Demo9.client.console.impl.ConsoleCommandManager;
+import com.wuxie.netty.Demo9.client.console.impl.LoginConsoleCommand;
+import com.wuxie.netty.Demo9.codeC.PacketCodecHandler;
+import com.wuxie.netty.Demo9.codeC.PacketDecoder;
+import com.wuxie.netty.Demo9.codeC.PacketEncoder;
+import com.wuxie.netty.Demo9.utils.SessionUtil;
+import com.wuxie.netty.Demo9.codeC.Spliter;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 
 import java.util.Date;
@@ -34,15 +36,24 @@ public class NettyClient {
         bootstrap
                 .group(workerGroup)
                 .channel(NioSocketChannel.class)
-                .handler(new ChannelInitializer<NioSocketChannel>() {
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
+                .option(ChannelOption.SO_KEEPALIVE, true)
+                .option(ChannelOption.TCP_NODELAY, true)
+                .handler(new ChannelInitializer<SocketChannel>() {
 
                     @Override
-                    protected void initChannel(NioSocketChannel nioSocketChannel) {
+                    protected void initChannel(SocketChannel nioSocketChannel) {
                         nioSocketChannel.pipeline().addLast(new Spliter());
                         nioSocketChannel.pipeline().addLast(new PacketDecoder());
+                        nioSocketChannel.pipeline().addLast(new PacketEncoder());
                         nioSocketChannel.pipeline().addLast(new LoginResponseHandler());
                         nioSocketChannel.pipeline().addLast(new MessageResponseHandler());
-                        nioSocketChannel.pipeline().addLast(new PacketEncoder());
+                        nioSocketChannel.pipeline().addLast(new CreateGroupResponseHandler());
+                        nioSocketChannel.pipeline().addLast(new JoinGroupResponseHandler());
+                        nioSocketChannel.pipeline().addLast(new QuitGroupResponseHandler());
+                        nioSocketChannel.pipeline().addLast(new ListGroupMemberResponseHandler());
+                        nioSocketChannel.pipeline().addLast(new GroupMessageResponseHandler());
+                        nioSocketChannel.pipeline().addLast(new LogoutResponseHandler());
                     }
                 });
 
@@ -71,35 +82,19 @@ public class NettyClient {
 
     public static void startConsoleThread(Channel channel) {
         Scanner scanner = new Scanner(System.in);
-        LoginRequestPacket loginRequestPacket = new LoginRequestPacket();
+        LoginConsoleCommand loginConsoleCommand = new LoginConsoleCommand();
+        ConsoleCommandManager consoleCommandManager = new ConsoleCommandManager();
         new Thread(() -> {
             while (!Thread.interrupted()) {
-                    if (!SessionUtil.hasLogin(channel)) {
-                        System.out.println("输入用户名登录:");
-                        String username = scanner.nextLine();
-                        loginRequestPacket.setUsername(username);
-                        // 默认密码
-                        loginRequestPacket.setPassword("123");
-                        channel.writeAndFlush(loginRequestPacket);
-                        waitForLoginResponse();
-                    } else {
-
-                        System.out.println("====输入你要发送的对象ID");
-                        String toUserId = scanner.next();
-                        System.out.println("====输入你要发送的消息");
-                        String message = scanner.next();
-                        channel.writeAndFlush(new MessageRequestPacket(message,toUserId));
-                    }
+                if (!SessionUtil.hasLogin(channel)) {
+                    loginConsoleCommand.exec(scanner, channel);
+                } else {
+                    consoleCommandManager.exec(scanner, channel);
                 }
+            }
         }).start();
 
     }
 
-    public static void waitForLoginResponse(){
-        try {
-            Thread.sleep(1000);
-        } catch (InterruptedException e) {
 
-        }
-    }
 }

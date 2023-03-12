@@ -2651,7 +2651,7 @@ public static void waitForLoginResponse(){
 
 
 
-全部代码展示  `Demo8`
+> **全部代码展示  `Demo8`     [代码]([Netty/src/main/java/com/wuxie/netty/Demo8 at master · zqywuxie/Netty (github.com)](https://github.com/zqywuxie/Netty/tree/master/src/main/java/com/wuxie/netty/Demo8))**
 
 
 
@@ -2686,3 +2686,816 @@ public static void waitForLoginResponse(){
 
 
 ![image-20230311221107580](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/image-20230311221107580.png)
+
+
+
+### 15.群聊的发起和通知
+
+---
+
+
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/8/9/1651c08e91bfb935~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+
+
+可见群聊与单聊很类似，只不过要多创建一个维护群聊组员的map
+
+
+
+
+
+#### 控制台命令执行器
+
+---
+
+后续会有不同的指令，将指令操作进行抽象为接口
+
+> ConsoleCommand.java
+
+```java
+public interface ConsoleCommand {
+
+    void exec (Scanner scanner, Channel channel);
+}
+```
+
+接下来指令的操作就进行实现该接口
+
+
+
+#### 管理控制台命令执行器
+
+---
+
+针对控制台输入不同的指令，就需要对不同的指令进行转发到响应的操作器中。所以我们创建一个指令的管理类
+
+> ConsoleCommandManager.java
+
+```java
+public class ConsoleCommandManager implements ConsoleCommand {
+
+    private Map<String, ConsoleCommand> consoleCommandMap;
+
+    
+    // 通过构造器进行初始化Map集合
+    public ConsoleCommandManager() {
+        consoleCommandMap = new HashMap<>();
+        consoleCommandMap.put("createGroup" , new CreateGroupConsoleCommand());
+        consoleCommandMap.put("sendToUser" , new SendToUserConsoleCommand());
+        consoleCommandMap.put("logout" , new LogoutConsoleCommand());
+        consoleCommandMap.put("listMembers" , new ListGroupMembersConsoleCommand());
+        consoleCommandMap.put("joinGroup" , new JoinGroupConsoleCommand());
+        consoleCommandMap.put("quitGroup" , new QuitGroupConsoleCommand());
+        consoleCommandMap.put("sendToGroup" , new SendToGroupConsoleCommand());
+    }
+
+    @Override
+    public void exec(Scanner scanner, Channel channel) {
+
+        // 输入指令的前提是需要登录,否则就返回
+        if (!SessionUtil.hasLogin(channel)) {
+            return;
+        }
+
+        System.out.println("输入指令:");
+        //1.输出命令
+        String command = scanner.next();
+		
+        //2.通过指令找到对应的操作器
+        ConsoleCommand consoleCommand = consoleCommandMap.get(command);
+
+        if (consoleCommand != null) {
+            consoleCommand.exec(scanner,channel);
+        } else {
+            System.out.println("无法识别[" + command + "]指令,请重新输入!");
+        }
+    }
+}
+```
+
+
+
+这样一来客户端的输出线程模块就需要修改
+
+> NettyClient.java
+
+```java
+public static void startConsoleThread(Channel channel) {
+    Scanner scanner = new Scanner(System.in);
+    LoginConsoleCommand loginConsoleCommand = new LoginConsoleCommand();
+    ConsoleCommandManager consoleCommandManager = new ConsoleCommandManager();
+    new Thread(() -> {
+        while (!Thread.interrupted()) {
+            if (!SessionUtil.hasLogin(channel)) {
+                loginConsoleCommand.exec(scanner, channel);
+            } else {
+                consoleCommandManager.exec(scanner, channel);
+            }
+        }
+    }).start();
+
+}
+```
+
+
+
+
+
+接下来根据不同的指令，读者可以定义相关的逻辑。 具体查看代码[]
+
+拿一个进行举例
+
+#### 客户端发送创建群聊请求
+
+---
+
+针对不同的请求，读者记得创建相应的请求包
+
+```java
+@Data
+public class CreateGroupRequestPacket extends Packet {
+
+    private List<String>userIds;
+
+    @Override
+    public Byte getCommand() {
+        return CREATE_GROUP_REQUEST;
+    }
+}
+```
+
+
+
+并且在数据解编码`PacketCodeC` 中添加相应的映射。
+
+```java
+packetTypeMap.put(CREATE_GROUP_REQUEST, CreateGroupRequestPacket.class);
+packetTypeMap.put(CREATE_GROUP_RESPONSE, CreateGroupResponsePacket.class);
+```
+
+注意这一些细节，笔者不在后面进行写出。
+
+
+
+>CreateGroupConsoleCommand.java
+
+
+
+```java
+public class CreateGroupConsoleCommand implements ConsoleCommand {
+
+    public static final String USER_ID_SPLITER = ",";
+
+    @Override
+    public void exec(Scanner scanner, Channel channel) {
+        CreateGroupRequestPacket createGroupRequestPacket = new CreateGroupRequestPacket();
+
+        System.out.println("【拉入群聊】输入用户id，id之间英文逗号隔开");
+        String userIds = scanner.next();
+        createGroupRequestPacket.setUserIds(Arrays.asList(userIds.split(USER_ID_SPLITER)));
+       
+        channel.writeAndFlush(createGroupRequestPacket);
+
+    }
+}
+```
+
+
+
+
+
+#### 服务端处理创建群聊请求
+
+---
+
+```java
+@ChannelHandler.Sharable
+public class CreateGroupRequestHandler extends SimpleChannelInboundHandler<CreateGroupRequestPacket> {
+
+    public static final CreateGroupRequestHandler INSTANCE = new CreateGroupRequestHandler();
+
+    private CreateGroupRequestHandler() {
+    }
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, CreateGroupRequestPacket createGroupRequestPacket) throws Exception {
+        //1. 获得用户ids
+        List<String> userIds = createGroupRequestPacket.getUserIds();
+        Session login = SessionUtil.getLogin(ctx.channel());
+        userIds.add(login.getUserId());
+        //2. 创建用户名字集合
+        ArrayList<String> userNames = new ArrayList<>();
+
+        // 3. 创建channel 组
+        DefaultChannelGroup channels = new DefaultChannelGroup(ctx.executor());
+        for (String userId : userIds) {
+            Channel channel = SessionUtil.getChannel(userId);
+            if (channel != null) {
+                channels.add(channel);
+                userNames.add(SessionUtil.getLogin(channel).getUsername());
+            }
+        }
+
+        // 4.创建响应包
+        String groupId = IDUtil.randomId();
+        CreateGroupResponsePacket createGroupResponsePacket = new CreateGroupResponsePacket();
+        createGroupResponsePacket.setGroupId(groupId);
+        createGroupResponsePacket.setSuccess(true);
+        createGroupResponsePacket.setUserNames(userNames);
+
+        // 5. 每个客户端发送消息
+        channels.writeAndFlush(createGroupResponsePacket);
+
+        System.out.println("群创建成功 id:" + groupId);
+        System.out.println("成员有: " + userNames);
+
+
+        SessionUtil.bindChannelGroup(groupId, channels);
+    }
+}
+
+```
+
+`@ChannelHandler.Sharable ` 关于这里的注解，以及这里类设置为单例模式的原因。留个<a id="topic">伏笔</a>   ,  <a href="#back"> 返回</a>
+
+
+
+#### 客户端处理创建群聊响应
+
+---
+
+
+
+> CreateGroupResponseHandler.java
+
+```java
+public class CreateGroupResponseHandler extends SimpleChannelInboundHandler<CreateGroupResponsePacket> {
+
+
+@Override
+protected void channelRead0(ChannelHandlerContext ctx, CreateGroupResponsePacket createGroupResponsePacket) throws Exception {
+    System.out.print("群创建成功，id 为[" + createGroupResponsePacket.getGroupId() + "], ");
+    System.out.println("群里面有：" + createGroupResponsePacket.getUserNames());
+}
+}
+
+```
+
+
+
+最后别忘了启动类里面添加handler
+
+```java
+.handler(new ChannelInitializer<SocketChannel>() {
+    @Override
+    public void initChannel(SocketChannel ch) {
+        // ...
+        // 添加一个新的 handler 来处理创建群聊成功响应的指令
+        ch.pipeline().addLast(new CreateGroupResponseHandler());
+        // ...
+    }
+});
+```
+
+
+
+
+
+### <a id="back">16.性能优化</a>
+
+---
+
+还记得前面留的伏笔吗 <a href="#topic"> 跳转</a>  ；先看前之前的代码
+
+```java
+serverBootstrap
+            .childHandler(new ChannelInitializer<NioSocketChannel>() {
+                protected void initChannel(NioSocketChannel ch) {
+                    ch.pipeline().addLast(new Spliter());
+                    ch.pipeline().addLast(new PacketDecoder());
+                    ch.pipeline().addLast(new LoginRequestHandler());
+                    ch.pipeline().addLast(new AuthHandler());
+                    ch.pipeline().addLast(new MessageRequestHandler());
+                    ch.pipeline().addLast(new CreateGroupRequestHandler());
+                    ch.pipeline().addLast(new JoinGroupRequestHandler());
+                    ch.pipeline().addLast(new QuitGroupRequestHandler());
+                    ch.pipeline().addLast(new ListGroupMembersRequestHandler());
+                    ch.pipeline().addLast(new GroupMessageRequestHandler());
+                    ch.pipeline().addLast(new LogoutRequestHandler());
+                    ch.pipeline().addLast(new PacketEncoder());
+                }
+            });
+```
+
+可以看到如果有一个新连接，都会调用这里的`initChannel` ，与指令相关的handler都被new一遍，会造成很大的资源浪费。并且这些handler都没有成员变量，即无状态，所以我们可以使用单例模式，来进行资源的共享，不用每次都new一遍浪费时间和资源，提高效率；
+
+
+
+> LoginRequestHandler.java
+
+```java
+// 1. 加上注解标识，表明该 handler 是可以多个 channel 共享的
+@ChannelHandler.Sharable
+public class LoginRequestHandler extends SimpleChannelInboundHandler<LoginRequestPacket> {
+
+    // 2. 构造单例
+    public static final LoginRequestHandler INSTANCE = new LoginRequestHandler();
+
+    protected LoginRequestHandler() {
+    }
+
+}
+```
+
+
+
+> NettyServer.java
+
+```java
+serverBootstrap
+        .childHandler(new ChannelInitializer<NioSocketChannel>() {
+            protected void initChannel(NioSocketChannel ch) {
+                // ...单例模式，多个 channel 共享同一个 handler
+                ch.pipeline().addLast(LoginRequestHandler.INSTANCE);
+                // ...
+            }
+        });
+```
+
+
+
+#### 合并handler
+
+---
+
+> NettyServer.java
+
+```java
+serverBootstrap
+    .childHandler(new ChannelInitializer<NioSocketChannel>() {
+        protected void initChannel(NioSocketChannel ch) {
+            ch.pipeline().addLast(new Spliter());
+            ch.pipeline().addLast(new PacketDecoder());
+            ch.pipeline().addLast(LoginRequestHandler.INSTANCE);
+            ch.pipeline().addLast(AuthHandler.INSTANCE);
+            ch.pipeline().addLast(MessageRequestHandler.INSTANCE);
+            ch.pipeline().addLast(CreateGroupRequestHandler.INSTANCE);
+            ch.pipeline().addLast(JoinGroupRequestHandler.INSTANCE);
+            ch.pipeline().addLast(QuitGroupRequestHandler.INSTANCE);
+            ch.pipeline().addLast(ListGroupMembersRequestHandler.INSTANCE);
+            ch.pipeline().addLast(GroupMessageRequestHandler.INSTANCE);
+            ch.pipeline().addLast(LogoutRequestHandler.INSTANCE);
+            ch.pipeline().addLast(new PacketEncoder());
+        }
+    });
+```
+
+可以看到，当需求增加后，代码量也会增加，到时候整体效果肯定是不好的，我们就可以对handler进行压缩合并。比如指令相关的操作可以压缩为一个，解编码的压缩为一个。但第一个`Spliter` 动不了，因为这个对每个channel进行维护。
+
+
+
+> IMServerHandler.java
+
+```java
+@ChannelHandler.Sharable
+
+public class IMServerHandler extends SimpleChannelInboundHandler<Packet> {
+
+    public static final IMServerHandler INSTANCE = new IMServerHandler();
+
+    private Map<Byte, SimpleChannelInboundHandler<? extends Packet>> handlerMap;
+
+    private IMServerHandler() {
+        handlerMap = new HashMap<>();
+
+        handlerMap.put(LOGOUT_REQUEST, LogoutRequestHandler.INSTANCE);
+
+        handlerMap.put(CREATE_GROUP_REQUEST, CreateGroupRequestHandler.INSTANCE);
+        handlerMap.put(JOIN_GROUP_REQUEST, JoinGroupRequestHandler.INSTANCE);
+        handlerMap.put(QUIT_GROUP_REQUEST, QuitGroupRequestHandler.INSTANCE);
+        handlerMap.put(LIST_GROUP_MEMBERS_REQUEST, ListGroupMembersRequestHandler.INSTANCE);
+
+        handlerMap.put(GROUP_MESSAGE_REQUEST, GroupMessageRequestHandler.INSTANCE);
+        handlerMap.put(MESSAGE_REQUEST, MessageRequestHandler.INSTANCE);
+    }
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, Packet packet) throws Exception {
+
+        // 寻找相应的handler调用其channelRead 方法
+        handlerMap.get(packet.getCommand()).channelRead(ctx, packet);
+
+    }
+}
+```
+
+
+
+对于`LoginRequestHandler`  和 `AuthHandler` ，我们已经设计过当登录过后，就会去掉这个逻辑，所以不需要加进去。
+
+> AuthHandler.java
+
+```java
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        if (!SessionUtil.hasLogin(ctx.channel())){
+            ctx.channel().close();
+        } else {
+            // 移除逻辑
+            ctx.pipeline().remove(this);
+            super.channelRead(ctx, msg);
+        }
+    }
+```
+
+
+
+> PacketCodecHandler.java
+
+
+
+```java
+@ChannelHandler.Sharable
+public class PacketCodecHandler extends MessageToMessageCodec<ByteBuf, Packet> {
+    public static final PacketCodecHandler INSTANCE = new PacketCodecHandler();
+
+    private PacketCodecHandler() {
+
+    }
+
+    @Override
+    protected void decode(ChannelHandlerContext ctx, ByteBuf byteBuf, List<Object> out) {
+        out.add(PacketCodeC.getInstance().decode(byteBuf));
+    }
+
+    @Override
+    protected void encode(ChannelHandlerContext ctx, Packet packet, List<Object> out) {
+        ByteBuf byteBuf = ctx.channel().alloc().ioBuffer();
+        PacketCodeC.getInstance().encode(byteBuf, packet);
+        out.add(byteBuf);
+    }
+}
+```
+
+
+
+最后进行更新NettyServer代码
+
+```java
+    .childHandler(new ChannelInitializer<NioSocketChannel>() {
+        protected void initChannel(NioSocketChannel channel) {
+            channel.pipeline().addLast(new Spliter());
+            channel.pipeline().addLast(PacketCodecHandler.INSTANCE);
+            channel.pipeline().addLast(LoginRequestHandler.INSTANCE);
+            channel.pipeline().addLast(AuthHandler.INSTANCE);
+            channel.pipeline().addLast(IMServerHandler.INSTANCE);
+        }
+    });
+```
+
+问题：
+
+​	有读者看到了就会疑惑，之前的`PacketEncoder` 不是放在最后吗，你合并后放在最前面怎么搞。其实不能只看拍排放的顺序，而是注意其是`InBound还是OutBound`。回顾下源码
+
+```java
+public class PacketEncoder extends MessageToByteEncoder<Packet>
+============
+public abstract class MessageToByteEncoder<I> extends ChannelOutboundHandlerAdapter
+```
+
+这是一个`ChannelOutboundHandlerAdapter` 类型的，然后其他的handler都是`SimpleChannelInboundHandler`。按照前面学的handler的执行顺序
+
+![img](https://wuxie-image.oss-cn-chengdu.aliyuncs.com/892002-20180613103330118-443239411.png)
+
+**所以我们不需要担心out会先执行，它会等待in执行完后才执行。**
+
+
+
+#### 更改事件传播路径
+
+​	假若你记得之前的代码，你会记得我们之前写数据是使用`ctx.channel().writeAndFlush()`，但我们现在更改了`ctx.writeAndFlush()`，两者的事件传播路径则是截然不同；
+
+
+
+> `ctx.writeAndFlush()` 事件传播路径
+
+
+
+`ctx.writeAndFlush()` 是从 pipeline 链中的当前节点开始往前找到第一个 outBound 类型的 handler 把对象往前进行传播，如果这个对象确认不需要经过其他 outBound 类型的 handler 处理，就使用这个方法。
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/10/7/1664b767ddcf7711~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+如上图，在某个 inBound 类型的 handler 处理完逻辑之后，调用 `ctx.writeAndFlush()` 可以直接一口气把对象送到 codec 中编码，然后写出去。
+
+
+
+> `ctx.channel().writeAndFlush()` 事件传播路径
+
+`ctx.channel().writeAndFlush()` 是从 pipeline 链中的最后一个 outBound 类型的 handler 开始，把对象往前进行传播，如果你确认当前创建的对象需要经过后面的 outBound 类型的 handler，那么就调用此方法。
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/10/7/1664b767de0cf5ea~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+如上图，在某个 inBound 类型的 handler 处理完逻辑之后，调用 `ctx.channel().writeAndFlush()`，对象会从最后一个 outBound 类型的 handler 开始，逐个往前进行传播，路径是要比 `ctx.writeAndFlush()` 要长的。
+
+由此可见，在我们的应用程序中，当我们没有改造编解码之前，我们必须调用 `ctx.channel().writeAndFlush()`, 而经过改造之后，我们的编码器（既属于 inBound, 又属于 outBound 类型的 handler）已处于 pipeline 的最前面，因此，可以大胆使用 `ctx.writeAndFlush()`。
+
+
+
+
+
+#### 减少阻塞主线程的操作
+
+---
+
+通常正常业务会涉及到数据的查询等复杂操作，这一类会耗费很长的时间
+
+```java
+protected void channelRead0(ChannelHandlerContext ctx, T packet) {
+    // 1. balabala 一些逻辑
+    // 2. 数据库或者网络等一些耗时的操作
+    // 3. writeAndFlush()
+    // 4. balabala 其他的逻辑
+}
+```
+
+
+
+像2这类操作就不能直接放在`channelRead0`中执行了。默认情况下，Netty 在启动的时候会开启 2 倍的 cpu 核数个 NIO 线程，而通常情况下我们单机会有几万或者十几万的连接，因此，一条 NIO 线程会管理着几千或几万个连接，在传播事件的过程中，单条 NIO 线程的处理逻辑可以抽象成以下一个步骤，我们就拿 channelRead0() 举例
+
+> 单个 NIO 线程执行的抽象逻辑
+
+```java
+List<Channel> channelList = 已有数据可读的 channel
+for (Channel channel in channelist) {
+   for (ChannelHandler handler in channel.pipeline()) {
+       handler.channelRead0();
+   } 
+}
+```
+
+可见如果有一个handler阻塞了，那么后续的操作就无法进行了。
+
+**解决方案：**
+
+​	对于这类复杂操作可以放在线程池中去处理，就不会影响其他的channel
+
+```java
+ThreadPool threadPool = xxx;
+
+protected void channelRead0(ChannelHandlerContext ctx, T packet) {
+    threadPool.submit(new Runnable() {
+        // 1. balabala 一些逻辑
+        // 2. 数据库或者网络等一些耗时的操作
+        // 3. writeAndFlush()
+        // 4. balabala 其他的逻辑
+    })
+}
+```
+
+
+
+#### 记录某个操作处理时长
+
+----
+
+一般人的想法如下
+
+```java
+protected void channelRead0(ChannelHandlerContext ctx, T packet) {
+    threadPool.submit(new Runnable() {
+        long begin = System.currentTimeMillis();
+        // 1. balabala 一些逻辑
+        // 2. 数据库或者网络等一些耗时的操作
+        // 3. writeAndFlush()
+        // 4. balabala 其他的逻辑
+        long time =  System.currentTimeMillis() - begin;
+    })
+}
+```
+
+但是会出现一个问题，因为 `writeAndFlush()` 这个方法如果在非 NIO 线程（这里，我们其实是在业务线程中调用了该方法）中执行，它是一个异步的操作，调用之后，其实是会立即返回的，剩下的所有的操作，都是 Netty 内部有一个任务队列异步执行的。那么这里执行完不代表全部逻辑执行完，只代表Netty接收到了这个任务。进入它的源码得
+
+```java
+ChannelFuture writeAndFlush(Object msg);
+//ChannelFuture是Channel异步IO操作的结果。
+```
+
+所以使用它的一个方法`addListener`，添加一个监听器
+
+```java
+protected void channelRead0(ChannelHandlerContext ctx, T packet) {
+    threadPool.submit(new Runnable() {
+        long begin = System.currentTimeMillis();
+        // 1. balabala 一些逻辑
+        // 2. 数据库或者网络等一些耗时的操作
+        
+        // 3. writeAndFlush
+        xxx.writeAndFlush().addListener(future -> {
+            if (future.isDone()) {
+                // 4. balabala 其他的逻辑
+                long time =  System.currentTimeMillis() - begin;
+            }
+        });
+    })
+}
+```
+
+判断是否结束就进行时间的计算。
+
+
+
+### 17.心跳和空闲检测
+
+如果是学过微服务的同学，应该对这个不陌生。而这个检测的出现是解决连接故障的。如下
+
+#### 网络问题
+
+![image.png](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2018/10/7/1664c39eb393e946~tplv-t2oaga2asx-zoom-in-crop-mark:3024:0:0:0.awebp)
+
+简单来说就是某一端（服务端或者客户端） 底层TCP断开了，但是应用程序没有捕获，以为这条连接还存在。
+
+**出现的问题**：
+
+1. 对于客户端而言，你不知道服务端崩了，你就等待发送的消息响应，就带给用户不好的体验。
+2. 对于服务端而言，每条连接都会耗费cpu和内存资源，大量假死的连接会逐渐耗光服务器的资源，最终导致性能逐渐下降，程序奔溃。
+
+**原因：**
+
+1. 应用程序出现线程堵塞，无法进行数据的读写。
+2. 客户端或者服务端网络相关的设备出现故障，比如网卡，机房故障。
+3. 公网丢包。公网环境相对内网而言，非常容易出现丢包，网络抖动等现象，如果在一段时间内用户接入的网络连续出现丢包现象，那么对客户端来说数据一直发送不出去，而服务端也是一直收不到客户端来的数据，连接就一直耗着。
+
+由上得这种情况两端都会造成，所以从两个角度进行解决。
+
+
+
+#### 服务端空闲检测
+
+​	对于服务端而言，如果客户端一直发送消息那么这条连接是活的，而如果你很长时间不做操作，那么服务端就认为这条连接失效。
+
+这就是服务端的空闲检测，使用Netty自带的`IdleStateHandler` 即可解决；
+
+接下来，我们写一个类继承自 `IdleStateHandler`，来定义检测到假死连接之后的逻辑。
+
+> IMIdleStateHandler.java
+
+```java
+public class IMIdleStateHandler extends IdleStateHandler(空闲状态处理) {
+
+    private static final int READER_IDLE_TIME = 15;
+
+    public IMIdleStateHandler() {
+        super(READER_IDLE_TIME, 0, 0, TimeUnit.SECONDS);
+    }
+
+    @Override
+    protected void channelIdle(ChannelHandlerContext ctx, IdleStateEvent evt) {
+        System.out.println(READER_IDLE_TIME + "秒内未读到数据，关闭连接");
+        ctx.channel().close();
+    }
+}
+```
+
+1. 首先，我们观察一下 `IMIdleStateHandler` 的构造函数，他调用父类 `IdleStateHandler` 的构造函数，有四个参数，其中第一个表示读空闲时间，指的是在这段时间内如果没有数据读到，就表示连接假死；第二个是写空闲时间，指的是 在这段时间如果没有写数据，就表示连接假死；第三个参数是读写空闲时间，表示在这段时间内如果没有产生数据读或者写，就表示连接假死。写空闲和读写空闲为0，表示我们不关心者两类条件；最后一个参数表示时间单位。在我们的例子中，表示的是：如果 15 秒内没有读到数据，就表示连接假死。
+2. 连接假死之后会回调 `channelIdle()` 方法，我们这个方法里面打印消息，并手动关闭连接。
+
+
+
+> NettyServer.java
+
+```java
+serverBootstrap
+        .childHandler(new ChannelInitializer<NioSocketChannel>() {
+            protected void initChannel(NioSocketChannel ch) {
+                // 空闲检测
+                ch.pipeline().addLast(new IMIdleStateHandler());
+                ch.pipeline().addLast(new Spliter());
+                // ...
+            }
+        });
+```
+
+服务器的空闲检测应该放在最前面，因为如果插入到最后面的话，如果这条连接读到了数据，但是在 inBound 传播的过程中出错了或者数据处理完完毕就不往后传递了（我们的应用程序属于这类），那么最终 `IMIdleStateHandler` 就不会读到数据，最终导致误判。
+
+
+
+
+
+服务端的空闲检测时间完毕之后，接下来我们再思考一下，在一段时间之内没有读到客户端的数据，是否一定能判断连接假死呢？并不能，如果在这段时间之内客户端确实是没有发送数据过来，但是连接是 ok 的，那么这个时候服务端也是不能关闭这条连接的，为了防止服务端误判，我们还需要在客户端做点什么。
+
+
+
+
+
+
+
+
+
+#### 客户端定时心跳
+
+服务端在一段时间内没有收到客户端的数据，这个现象产生的原因可以分为以下两种：
+
+1. 连接假死。
+2. 非假死状态下确实没有发送数据。
+
+我们需要排除第二种情况，那么连接就是假死。可以在客户端设置一个定时任务，定期发送数据到服务端，服务端收到就会认为非假死没有数据。这个数据称为心跳数据包
+
+> HeartBeatTimerHandler.java
+
+```java
+public class HeartBeatTimerHandler extends ChannelInboundHandlerAdapter {
+
+    private static final int HEARTBEAT_INTERVAL = 5;
+
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        scheduleSendHeartBeat(ctx);
+
+        super.channelActive(ctx);
+    }
+
+    private void scheduleSendHeartBeat(ChannelHandlerContext ctx) {
+        ctx.executor().schedule(() -> {
+
+            if (ctx.channel().isActive()) {
+                ctx.writeAndFlush(new HeartBeatRequestPacket());
+                scheduleSendHeartBeat(ctx);
+            }
+
+        }, HEARTBEAT_INTERVAL, TimeUnit.SECONDS);
+    }
+}
+```
+
+`ctx.executor()` 返回的是当前的 channel 绑定的 NIO 线程，有一个`schedule()` 类似jdk的延时任务机制，每隔一段时间执行任务。这里设置为5s，肯定要比服务端空闲检测事件一半还要短，**排除公网偶发的秒级抖动**。
+
+
+
+#### 服务端回复心跳与客户端空闲检测
+
+客户端的空闲检测其实和服务端一样，依旧是在客户端 pipeline 的最前方插入 `IMIdleStateHandler`
+
+> NettyClient.java
+
+```java
+bootstrap
+        .handler(new ChannelInitializer<SocketChannel>() {
+            public void initChannel(SocketChannel ch) {
+                // 空闲检测
+                ch.pipeline().addLast(new IMIdleStateHandler());
+                ch.pipeline().addLast(new Spliter());
+                // ...
+```
+
+
+
+同样排除服务端在非假死情况下没有发数据，服务端也要定时发送心跳。并且该逻辑不需要登录，所以放在`AuthHandler`之前
+
+> NettyServer.java
+
+```java
+serverBootstrap
+                ch.pipeline().addLast(new IMIdleStateHandler());
+                ch.pipeline().addLast(new Spliter());
+                ch.pipeline().addLast(PacketCodecHandler.INSTANCE);
+                ch.pipeline().addLast(LoginRequestHandler.INSTANCE);
+                // 加在这里
+                ch.pipeline().addLast(HeartBeatRequestHandler.INSTANCE);
+                ch.pipeline().addLast(AuthHandler.INSTANCE);
+                ch.pipeline().addLast(IMHandler.INSTANCE);
+            }
+        });
+```
+
+
+
+`HeartBeatRequestHandler` 相应的实现为
+
+```java
+@ChannelHandler.Sharable
+public class HeartBeatRequestHandler extends SimpleChannelInboundHandler<HeartBeatRequestPacket> {
+    public static final HeartBeatRequestHandler INSTANCE = new HeartBeatRequestHandler();
+
+    private HeartBeatRequestHandler() {
+
+    }
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, HeartBeatRequestPacket requestPacket) {
+        ctx.writeAndFlush(new HeartBeatResponsePacket());
+    }
+}
+```
+
+
+
+服务端只需要向客户端回复一下，客户端检测到假死就断开连接。然后下面设置重连策略等。
+
+
+
+
+
+
+
+[Netty 入门与实战：仿写微信 IM 即时通讯系统-ProcessOn](https://www.processon.com/view/link/5bc343dde4b09b21f31baf69)

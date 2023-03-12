@@ -1,11 +1,12 @@
-package com.wuxie.netty.Demo8.server.Handler;
+package com.wuxie.netty.Demo9.server.Handler;
 
 
-import com.wuxie.netty.Demo8.entity.Session;
-import com.wuxie.netty.Demo8.protocol.Request.MessageRequestPacket;
-import com.wuxie.netty.Demo8.protocol.Response.MessageResponsePacket;
-import com.wuxie.netty.Demo8.utils.SessionUtil;
+import com.wuxie.netty.Demo9.entity.Session;
+import com.wuxie.netty.Demo9.protocol.Request.MessageRequestPacket;
+import com.wuxie.netty.Demo9.protocol.Response.MessageResponsePacket;
+import com.wuxie.netty.Demo9.utils.SessionUtil;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 
@@ -14,7 +15,17 @@ import io.netty.channel.SimpleChannelInboundHandler;
  * @date 2023/3/10 19:41
  * @description 该文件的描述 todo
  */
+
+
+@ChannelHandler.Sharable
+
 public class MessageRequestHandler extends SimpleChannelInboundHandler<MessageRequestPacket> {
+
+    public static final MessageRequestHandler INSTANCE = new MessageRequestHandler();
+
+    public MessageRequestHandler() {
+    }
+
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, MessageRequestPacket messageRequestPacket) throws Exception {
 
@@ -30,7 +41,7 @@ public class MessageRequestHandler extends SimpleChannelInboundHandler<MessageRe
 
         //3.拿到消息方的channel
 
-        Channel toUserChannel = SessionUtil.getChannel(messageRequestPacket.getToUserId());
+        Channel toUserChannel =SessionUtil.getChannel(messageRequestPacket.getToUserId());
 
         //4.消息发送给接收方
 
